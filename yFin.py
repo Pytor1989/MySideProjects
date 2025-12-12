@@ -12,10 +12,6 @@ import io
 import mySQLhandler
 
 
-# period = ['1mo', '1y', '5y','max']
-# interval = ['1d','1wk','1mo']
-
-
 class InstrData(object):
     def __init__(self, _ticker):
         self._ticker_str = _ticker
@@ -261,115 +257,9 @@ class Stocks(InstrData):
         return self.get_fcf_data(mode_)['FreeCashFlow'].astype(float).fillna(0).head(1).squeeze()
 
 
-def importInstr(_connListSQL, tickList):
-    lenUpload, listInstr, countImp = len(tickList), [], 0
-    sqlManip = mySQLhandler.SqlManip(_connListSQL)
-    sqlManip.deleteSimple('assetNewYF', 'staging')
-    for ticker in tqdm(tickList, total=len(tickList), desc='Processing tickers creation'):
-        instr = InstrData(ticker)
-        info = instr.get_info()
-        if "longName" not in info:
-            info["longName"] = info.get("shortName")
-        if info.get("typeDisp") == "Equity" and "longBusinessSummary" not in info and "bookValue" not in info:
-            info["typeDisp"] = "ETF"
-        row = {
-            "longName": info.get("longName"),
-            "typeDisp": info.get("typeDisp"),
-            "currency": info.get("currency"),
-            "fullExchangeName": info.get("fullExchangeName"),
-            "sector": info.get("sector", ""),  # ETFs don't have sector
-            "industry": info.get("industry", ""),  # ETFs don't have industry
-            "SYMBOL": ticker
-        }
-        listInstr.append(row)
-        countImp += 1
-    if listInstr:
-        print(f"Preparing sql import for {countImp}/{lenUpload} instrument requested ")
-        dfInstr = pd.DataFrame(listInstr)
-        sqlManip.importData(dfInstr, 'assetNewYF', 'staging')
-        # add stored procedure
-        sp = '[dbo].[sp_NewAssetYF]'
-        sqlManip.cursor(sp)
-        print('Instruments imported in relevant table')
-
-
-def requestHistStampBulk(_connListSQL,listYF,_duration):
-    dateStart, listDt, countImport,listValidCont =  myLib.offsetDate(_duration), [], 0,[]
-    if listYF is None:
-        pass
-    else:
-        lenUpload = len(listYF)
-        for i in listYF:
-            ticker = i[0]
-            instr = InstrData(ticker)
-            ms = instr.get_info()['firstTradeDateMilliseconds']
-            if ms < 0:
-                instStartDt = datetime.date(1971, 1, 1)
-            else:
-                instStartDt = datetime.datetime.fromtimestamp(ms / 1000, tz=datetime.timezone.utc).date()
-
-            listDt.append([i[0], dateStart, instStartDt, i[6],i[1],i[7]])
-            countImport += 1
-            print(f"Requested {countImport}/{lenUpload}: {i[6]} into List")
-
-        for d in listDt:
-            if d[1] > d[2]:
-                print(f"=> Request price history for {_duration} ok for {d[3]} | {d[0]}")
-                listValidCont.append([d[0], d[1], d[3],d[4],d[5]])
-            else:
-                print(f"=>ERROR: Requested to much history: minimum {str(d[2])} for {d[3]} | {d[0]}")
-        return listValidCont
-
-
-def requestHistoPriceDailyBulk(_connListSQL,_listValidCont,_duration):
-    if not _listValidCont:
-        print('No instruments available for the selected date/class/strategy')
-    else:
-        sqlManip = mySQLhandler.SqlManip(_connListSQL)
-        lenUpload,countInstr,listPx, sourceId = len(_listValidCont),0,[],2
-        for v in _listValidCont:
-            countInstr += 1
-            instr = InstrData(v[0])
-            df =  instr.get_cust_price_OHLC(str(v[1]))
-            df['CONID'],df['SECTYPE'] = v[4],v[3]
-            listPx.append(df)
-            print(f"Uploaded {countInstr}/{lenUpload}: {v[2]} | {v[0]} in staging Table")
-        countYFimp = len(listPx)
-        dfPrice = pd.concat(listPx)
-        if countYFimp == lenUpload:
-            sqlManip.deleteSimple('priceDaily', 'staging')
-            sqlManip.importData(dfPrice,'priceDaily', 'staging')
-            spPrice = '[dbo].[sp_InsertPriceDaily]'+str(sourceId)
-            sqlManip.cursor(spPrice)
-            print('=> Instrument price daily imported in relevant table')
-        else:
-            print('Import Fail! Check logs and retry')
-
-
-
-def requestHistoPriceDailyMax(_connListSQL,_listValidCont):
-    listPrice, sourceYF = [], 2
-    sqlManip = mySQLhandler.SqlManip(_connListSQL)
-    for i in _listValidCont:
-        instr = InstrData(i[0])
-        ms = instr.get_info()['firstTradeDateMilliseconds']
-        if ms < 0:
-            dtStart = str(datetime.date(1971, 1, 1))
-        else:
-            dtStart = str(datetime.datetime.fromtimestamp(ms / 1000, tz=datetime.timezone.utc).date())
-        data = instr.get_cust_price_OHLC(dtStart)
-        data['CONID'], data['SECTYPE'] = i[7], i[1]
-        listPrice.append(data)
-        print(f"Price data requested for {i[6]} | {i[0]} since {dtStart}")
-    df = pd.concat(listPrice)
-    sqlManip.deleteSimple('priceDaily', 'staging')
-    sqlManip.importData(df, 'priceDaily', 'staging')
-    spPrice = '[dbo].[sp_InsertPriceDaily]' + str(sourceYF)
-    sqlManip.cursor(spPrice)
-    print('=> Instrument price daily imported in relevant table')
-
 def get_validTickersYF(dictTick):
-    '''Return a dict of Valid and Invalid tickers for Yahoo'''
+    '''Return a dict of Valid and Invalid tickers for Yahoo
+    insert a dict {yTicker:InstrumentName}'''
     dictValid, dictInvalid = {}, {}
     count, dataset = 0, len(dictTick)
     for key, value in tqdm(dictTick.items(), total=len(dictTick), desc="Processing tickers"):
@@ -383,6 +273,7 @@ def get_validTickersYF(dictTick):
     return dictValid, dictInvalid
 
 def validCondFCF(lstConst, mode_):
+    '''lstConst should be a lol with the ticker yahoo in each list being [0] position'''
     dictSelected = {}
     countSel, validImp = 0, len(lstConst)
     for lstValue in tqdm(lstConst, total=len(lstConst), desc="Processing selection by setting FCF parameter"):
@@ -392,7 +283,7 @@ def validCondFCF(lstConst, mode_):
             cond = 1
         else:
             cond=0
-        dictSelected[lstValue[0]] = {"NAME": lstValue[6], "CONID": lstValue[7],"EQINDEX_ISO": lstValue[4], "CONDITION": cond}
+        dictSelected[lstValue[0]] = {"NAME": lstValue[6]}
 
     print(f"{countSel}/{validImp} passed the first selection filter")
     df = pd.DataFrame.from_dict(dictSelected, orient="index")
@@ -400,81 +291,18 @@ def validCondFCF(lstConst, mode_):
     return df
 
 def getEarningsDtConst(lstConst_):
+    '''lstConst should be a lol with the ticker yahoo in each list being [0] position'''
     dictE = {}
     for const in tqdm(lstConst_, total = len(lstConst_), desc="Processing Earnings Date for Constituents"):
         instr = Stocks(const[0])
         lastE = instr.get_dtInfo('mostRecentQuarter')
         nxtFiscE = instr.get_dtInfo('nextFiscalYearEnd')
         nxtEannounce = instr.get_earnings_dt()
-        dictE[const[0]] = {"CONID": const[7], "EQINDEX_ISO": const[4], "LAST_REPORT_DATE": lastE,
+        dictE[const[0]] = {"LAST_REPORT_DATE": lastE,
                            "NXT_FISC_YE_DATE": nxtFiscE, 'NXT_ANN_DATE': nxtEannounce}
 
     df = pd.DataFrame.from_dict(dictE, orient="index")
     return df
-
-def snapFCF(lstConst_, mode_):
-    dictResult = {}
-    for cont in tqdm(lstConst_, total=len(lstConst_), desc="Processing selection, delivering final report"):
-        data = Stocks(cont[0])
-        dictVal = {'CONID': cont[7], 'EQINDEX_ID': cont[5], 'NNWC': data.nnwc(mode_), 'NCAV': data.ncav(mode_),
-                   'PFCF': data.pfcf(mode_), 'FCFDEBT_R': data.fcfDebtR(mode_),
-                   'FCFDEBT': data.fcfDebtI(mode_), 'EVFCF': data.evFcf(mode_), 'LAST_FCF': data.lastFCF(mode_),
-                   'LAST_NBSHARES': data.get_floatInfo('sharesOutstanding'), 'LAST_ANN_DT':  cont[3]}
-        dictResult[cont[0]] = dictVal
-
-    df = pd.DataFrame.from_dict(dictResult, orient='index').reset_index().rename(columns={'index': 'SYMBOL'})
-    myLib.to_excel_colsize_multitab('SNAP_FCF', [df], ['FCF_Results'], myLib.pthDbReport)
-    print(f"Snap Age of Empire Report exported for selected index to IB|DataBase|Import\nAnalyze it before running Import File and Run insert FCF")
-
-
-def techFCF(tickerDict):
-    dataWatch = []
-    for ticker in tickerDict.keys():
-        instr = InstrData(ticker)
-        data = instr.get_cust_price_OHLC(myLib.offsetDate('5 Y'))
-        data = data.sort_values('Date').reset_index(drop=True)
-        data["EMA350"] = data["Close"].ewm(span=350, adjust=False).mean()
-        data["EMA25"] = data["Close"].ewm(span=25, adjust=False).mean()
-        ema350_last = data["EMA350"].iloc[-1]
-        ema25_last = data["EMA25"].iloc[-1]
-        aph = data['Close'].max()
-        dt_aph = data.loc[data['Close'].idxmax(), 'Date']
-        lastPx = data["Close"].iloc[-1]
-        last_idx = len(data) - 1
-        m1 = data.iloc[last_idx - 20]['Close']  # ~1 month (20 trading days)
-        m3 = data.iloc[last_idx - 60]['Close']  # ~3 months
-        distance = (aph - lastPx) / lastPx
-        dataWatch.append({"TICKER": ticker,
-                          "CONID": tickerDict[ticker],
-                          "5Y_HIGH": aph,
-                          "DT_HIGH": dt_aph,
-                          "CLOSE": lastPx,
-                          "DISTANCE": distance,
-                          "M1_CLOSE":m1,
-                          "M3_CLOSE":m3,
-                          "XMA_ST":ema25_last,
-                          "XMA_LT":ema350_last})
-
-    df_watch = pd.DataFrame(dataWatch)
-    return df_watch
-
-######## may be put it in SQL handler as you manipulate sql object rather than yahoo
-
-
-
-
-# # MSCI_EAFE = '^990300-USD-STRD'
-# ticker = yf.Ticker(T_bill)
-# df_Price = pd.DataFrame(ticker.history(period="5y"))
-# # print(df_Price)
-# print(ticker.get_actions())
-# get_actions: returns the dates of dividend payouts and stock splits
-# get_analysis: returns projections and forecasts of relevant financial variables, such as growth, earnings estimates, revenue estimates, EPS trends, etc. It returns the data available on yahoo finance under the “Analysis” tab (example)
-# get_balance_sheet: returns historical yearly balance sheet data of a given company. It is analogous to the information available on Yahoo Finance under the “Balance Sheet” section of the “Financials” tab (example)
-# get_calendar: returns important future dates and the datatype that is going to be disclosed on said date, in addition to their current estimates (low, average, and high).
-# get_cashflow: returns the historical yearly cash flows of a given company. Analogous to the “Cash Flow” section under the “Financials” tab in Yahoo Finance (example)
-# get_info: returns a dictionary with relevant information regarding a given company’s profile. Zip Code, industry sector, employee count, summary, city, phone, state, country, website, address, etc.
-#get_earnings_dates return past and forward quarter earnings date with estimate reported and suprises
 
 
 
