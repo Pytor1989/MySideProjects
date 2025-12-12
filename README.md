@@ -1,2 +1,3 @@
 # MySideProjects
-Side projects I am working on, various area/subject, mainly finance and systems
+SqlManip.py : will allow you to upload / manipulate/ activate sql functions, sp, and tables. Using a list containing your login/pass/url/dbName you can instantiate the Class and do basic actions on your sql database. 
+yFin.py: will allow you to dowload data using yfinance in python, prices, fundamentals, information about ETF, companies, derivatives. Offer structured BS,IS,CF statements with up to 4 years yearly data. I find it particularly useful for basic financial research or indicator computation, or even cross analysis, given the tedious learning curve on yfinance and the scarce information/guide on the web.
