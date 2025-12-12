@@ -80,7 +80,6 @@ class InstrData(object):
 
 class Stocks(InstrData):
     def __init__(self, _ticker):
-        # call parent constructor so InstrData is initialized
         super().__init__(_ticker)
 
     def get_stock_isin(self):
@@ -303,6 +302,7 @@ def getEarningsDtConst(lstConst_):
 
     df = pd.DataFrame.from_dict(dictE, orient="index")
     return df
+
 
 
 
